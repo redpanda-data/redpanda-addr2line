@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  web:
+    build: ./app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    expose:
+      - 8000
+    ports:
+      - 8001:8000
+    volumes:
+      - redpanda:/mnt/redpanda
+
+  sync:
+    build: ./sync
+    command: python main.py
+    volumes:
+      - redpanda:/mnt/redpanda
+
+
+volumes:
+  redpanda:
