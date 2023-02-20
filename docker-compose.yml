@@ -6,8 +6,6 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     expose:
       - 8000
-    ports:
-      - 8001:8000
     volumes:
       - redpanda:/mnt/redpanda
 
@@ -16,7 +14,28 @@ services:
     command: python main.py
     volumes:
       - redpanda:/mnt/redpanda
+    environment:
+      - CLOUDSMITH_API_KEY=${CLOUDSMITH_API_KEY}
 
+  caddy:
+    build: ./caddy
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    ports:
+      - ${HTTP_PORT:-80}:80
+      - ${HTTPS_PORT:-443}:443
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    environment:
+      PROXY_BACKEND: web
+      PROXY_PORT: 8000
+      DOMAIN: ${DOMAIN}
+      USERNAME: ${USERNAME}
+      PASSWORD: ${PASSWORD}
 
 volumes:
   redpanda:
+  caddy_data:
+  caddy_config:
