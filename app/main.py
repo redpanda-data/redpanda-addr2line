@@ -60,7 +60,7 @@ def decode_redpanda_backtrace(trace, version):
     Decode a backtrace against the specified version of Redpanda.
     """
     redpanda = redpanda_exec_path(version).as_posix()
-    args = f"python {addr2line} -a llvm-addr2line -e {redpanda}"
+    args = f"python {addr2line} -a llvm15-addr2line -e {redpanda}"
     return subprocess.check_output(
         args.split(), stderr=subprocess.STDOUT, input=trace, text=True
     )
