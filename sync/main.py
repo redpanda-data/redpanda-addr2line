@@ -33,6 +33,11 @@ assert refresh_seconds > 0, "invalid refresh rate: {os.getenv(refresh_key)}"
 #
 min_major_version = int(os.getenv("MIN_MAJOR_VERSION", 22))
 
+#
+# Supported Redpanda architectures to download
+#
+supported_architectures = {"amd64", "arm"}
+
 
 @contextlib.contextmanager
 def cloudsmith_session():
@@ -49,13 +54,14 @@ def cloudsmith_session():
         yield sesh
 
 
-def list_all_packages():
+def list_all_packages(architecture):
     """
     Fetch all known Redpanda packages.
     """
 
     def package_iter(sesh):
-        url = "https://api.cloudsmith.io/v1/packages/redpanda/redpanda/?q=name:redpanda-amd64+format:raw"
+        url = ("https://api.cloudsmith.io/v1/packages/redpanda/redpanda/?q=name:redpanda-{}+format:raw"
+               .format(architecture))
         while url is not None:
             resp = sesh.get(url)
             resp.raise_for_status()
@@ -71,39 +77,41 @@ def sync_packages():
     """
     List all Redpanda packages eligible to sync.
     """
-    for pkg in list_all_packages():
-        name = pkg["name"]
-        assert (
-            name == "redpanda-amd64"
-        ), f"Query returned package with unsupported name: {name}"
-        assert (
-            pkg["format"] == "raw"
-        ), f"Query returned package with unsupported format: {pkg['format']}"
 
-        version = pkg["version"]
-        m = re.match(r"^(?P<major>\d{2})\.\d+\.\d{1,2}$", version)
-        if not m:
-            print(f"Skipping package {name} with invalid version: {version}")
-            continue
-        if int(m.group("major")) < min_major_version:
-            print(
-                f"Skipping package {name} with major version {version} < {min_major_version}"
-            )
-            continue
-        if not pkg["is_downloadable"] or not pkg["is_sync_completed"]:
-            print(
-                f"Skipping package {name} not ready: d={pkg['is_downloadable']} s={pkg['is_sync_completed']}"
-            )
-            continue
+    for arch in supported_architectures:
+        for pkg in list_all_packages(arch):
+            name = pkg["name"]
+            assert (
+                    name == "redpanda-{}".format(arch)
+            ), f"Query returned package with unsupported name: {name}"
+            assert (
+                    pkg["format"] == "raw"
+            ), f"Query returned package with unsupported format: {pkg['format']}"
+
+            version = pkg["version"]
+            m = re.match(r"^(?P<major>\d{2})\.\d+\.\d{1,2}$", version)
+            if not m:
+                print(f"Skipping package {name} with invalid version: {version}")
+                continue
+            if int(m.group("major")) < min_major_version:
+                print(
+                    f"Skipping package {name} with major version {version} < {min_major_version}"
+                )
+                continue
+            if not pkg["is_downloadable"] or not pkg["is_sync_completed"]:
+                print(
+                    f"Skipping package {name} not ready: d={pkg['is_downloadable']} s={pkg['is_sync_completed']}"
+                )
+                continue
 
         yield version, pkg["cdn_url"]
 
 
-def download_package(version, url):
+def download_package(version, url, arch):
     """
     Downloads and extracts a Redpanda release into download directory.
     """
-    path = download_dir / version
+    path = download_dir / arch / version
     if path.is_dir():
         print(f"Skipping {version} at {path}: already downloaded")
         return
