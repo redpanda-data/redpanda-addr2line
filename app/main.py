@@ -76,22 +76,22 @@ def decode_redpanda_backtrace(trace, arch, version):
 
 
 @app.post(
-    "/backtrace/{version}",
+    "/backtrace/{arch}/{version}",
     summary="Decode a backtrace from Redpanda",
     response_class=PlainTextResponse,
     response_description="Hey i'm a response desription",
 )
 def backtrace(
+        arch: str = Path(
+            title="Redpanda architecture",
+            default=...,
+            example="amd64",
+        ),
         version: str = Path(
             title="Redpanda version",
             default=...,
             regex=r"^\d{2}\.\d\.\d{1,2}$",
             example="22.3.11",
-        ),
-        arch: str = Path(
-            title="Redpanda architecture",
-            default=...,
-            example="amd64",
         ),
         trace: str = Body(
             media_type="text/plain",

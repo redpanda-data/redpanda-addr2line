@@ -37,6 +37,7 @@ min_major_version = int(os.getenv("MIN_MAJOR_VERSION", 22))
 # Supported Redpanda architectures to download
 #
 supported_architectures = {"amd64", "arm"}
+architecture_names = {"redpanda-amd64", "redpanda-arm64"}
 
 
 @contextlib.contextmanager
@@ -82,7 +83,7 @@ def sync_packages():
         for pkg in list_all_packages(arch):
             name = pkg["name"]
             assert (
-                    name == "redpanda-{}".format(arch)
+                    name in architecture_names
             ), f"Query returned package with unsupported name: {name}"
             assert (
                     pkg["format"] == "raw"
@@ -104,7 +105,7 @@ def sync_packages():
                 )
                 continue
 
-        yield version, pkg["cdn_url"]
+            yield version, pkg["cdn_url"], arch
 
 
 def download_package(version, url, arch):
@@ -159,8 +160,8 @@ if __name__ == "__main__":
 
     while not stop.is_set():
         try:
-            for version, url in sync_packages():
-                download_package(version, url)
+            for version, url, arch in sync_packages():
+                download_package(version, url, arch)
             print(f"Refresh complete. Next refresh in {refresh_seconds} sec")
             stop.wait(refresh_seconds)
 
