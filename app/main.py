@@ -46,6 +46,7 @@ def versions():
             if not re.match(r"^\d{2}\.\d\.\d{1,2}$", dir.name):
                 continue
             tmp_versions.append(dir.name)
+        tmp_versions.sort()
         versions.append((arch, tmp_versions))
     return versions
 
