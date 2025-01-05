@@ -8,22 +8,23 @@ from fastapi.responses import PlainTextResponse
 #
 # Maximum length of a stack trace that the API will accept
 #
-max_trace_length = int(os.getenv("MAX_TRACE_LEN", 2 ** 17))
+max_trace_length = int(os.getenv("MAX_TRACE_LEN", 2**17))
 assert max_trace_length > 0, f"Max trace length is daft: {max_trace_length}"
 
 #
 # Path to the seastar-addr2line script
 #
 addr2line = pathlib.Path(
-    os.getenv("SEASTAR_ADDR2LINE_PATH", "/usr/src/scripts/seastar-addr2line")
-)
-assert addr2line.is_file(), f"seastar-addr2line tool {addr2line} does not exist"
+    os.getenv("SEASTAR_ADDR2LINE_PATH", "/usr/src/scripts/seastar-addr2line"))
+assert addr2line.is_file(
+), f"seastar-addr2line tool {addr2line} does not exist"
 
 #
 # Directory containing extracted Redpanda releases
 #
 download_dir = pathlib.Path(os.getenv("DOWNLOAD_DIR", "/mnt/redpanda"))
-assert download_dir.is_dir(), f"download directory {download_dir} does not exist"
+assert download_dir.is_dir(
+), f"download directory {download_dir} does not exist"
 
 #
 # Supported Redpanda architectures to download
@@ -45,6 +46,7 @@ def versions():
             if not re.match(r"^\d{2}\.\d\.\d{1,2}$", dir.name):
                 continue
             tmp_versions.append(dir.name)
+        tmp_versions.sort()
         versions.append((arch, tmp_versions))
     return versions
 
@@ -70,9 +72,10 @@ def decode_redpanda_backtrace(trace, arch, version):
     """
     redpanda = redpanda_exec_path(arch, version).as_posix()
     args = f"python {addr2line} -a llvm15-addr2line -e {redpanda}"
-    return subprocess.check_output(
-        args.split(), stderr=subprocess.STDOUT, input=trace, text=True
-    )
+    return subprocess.check_output(args.split(),
+                                   stderr=subprocess.STDOUT,
+                                   input=trace,
+                                   text=True)
 
 
 @app.post(
@@ -82,22 +85,22 @@ def decode_redpanda_backtrace(trace, arch, version):
     response_description="Hey i'm a response desription",
 )
 def backtrace(
-        arch: str = Path(
-            title="Redpanda architecture",
-            default=...,
-            example="amd64",
-        ),
-        version: str = Path(
-            title="Redpanda version",
-            default=...,
-            regex=r"^\d{2}\.\d\.\d{1,2}$",
-            example="22.3.11",
-        ),
-        trace: str = Body(
-            media_type="text/plain",
-            min_length=1,
-            max_length=max_trace_length,
-            example="""Backtrace:
+    arch: str = Path(
+        title="Redpanda architecture",
+        default=...,
+        example="amd64",
+    ),
+    version: str = Path(
+        title="Redpanda version",
+        default=...,
+        regex=r"^\d{2}\.\d\.\d{1,2}$",
+        example="22.3.11",
+    ),
+    trace: str = Body(
+        media_type="text/plain",
+        min_length=1,
+        max_length=max_trace_length,
+        example="""Backtrace:
   0x5a3e146
   0x5aa1aa6
   /opt/redpanda/lib/libc.so.6+0x42abf
@@ -111,6 +114,6 @@ def backtrace(
   /opt/redpanda/lib/libc.so.6+0x2d58f
   /opt/redpanda/lib/libc.so.6+0x2d648
   0x1d472a4""",
-        ),
+    ),
 ):
     return decode_redpanda_backtrace(trace, arch, version)
