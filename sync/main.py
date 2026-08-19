@@ -1,4 +1,3 @@
-import contextlib
 import os
 import pathlib
 import re
@@ -9,12 +8,16 @@ import tarfile
 import tempfile
 import threading
 import traceback
+import xml.etree.ElementTree as ET
 
 #
-# Cloudsmith API key for listing and downloading releases
+# Public S3 bucket hosting Redpanda release artifacts. Anonymously
+# readable, so no credentials are required.
 #
-api_key = os.getenv("CLOUDSMITH_API_KEY", None)
-assert api_key, "required api key not provided: set CLOUDSMITH_API_KEY"
+releases_url = os.getenv(
+    "REDPANDA_RELEASES_URL", "https://vectorized-public.s3.us-west-2.amazonaws.com"
+).rstrip("/")
+releases_prefix = "releases/redpanda/"
 
 #
 # Directory used to store extracted Redpanda releases
@@ -24,9 +27,9 @@ assert download_dir.is_dir(), f"download directory {download_dir} does not exist
 
 #
 # How often (in minutes) to query for new releases
-refresh_key = "CLOUDSMITH_REFRESH_MINUTES"
+refresh_key = "SYNC_REFRESH_MINUTES"
 refresh_seconds = 60 * int(os.getenv(refresh_key, 30))
-assert refresh_seconds > 0, "invalid refresh rate: {os.getenv(refresh_key)}"
+assert refresh_seconds > 0, f"invalid refresh rate: {os.getenv(refresh_key)}"
 
 #
 # Minimum major version that will be considered when syncing
@@ -34,78 +37,62 @@ assert refresh_seconds > 0, "invalid refresh rate: {os.getenv(refresh_key)}"
 min_major_version = int(os.getenv("MIN_MAJOR_VERSION", 22))
 
 #
-# Supported Redpanda architectures to download
+# Supported Redpanda architectures to download. Keys are the directory
+# names used on disk and in the app's public API; values are the arch
+# suffix used in the release filename in the S3 bucket, which differs
+# for arm ("arm" here vs. "arm64" in the object key).
 #
-supported_architectures = {"amd64", "arm"}
-architecture_names = {"redpanda-amd64", "redpanda-arm64"}
+supported_architectures = {"amd64": "amd64", "arm": "arm64"}
+
+_s3_ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 
 
-@contextlib.contextmanager
-def cloudsmith_session():
+def list_all_versions():
     """
-    Build a cloudsmith api request sessions with configured api key.
+    List all Redpanda release versions published under releases/redpanda/
+    in the public vectorized-public S3 bucket.
     """
+    versions = []
+    token = None
     with requests.Session() as sesh:
-        sesh.headers.update(
-            {
-                "Accept": "*/*",
-                "X-Api-Key": api_key,
+        while True:
+            params = {
+                "list-type": "2",
+                "prefix": releases_prefix,
+                "delimiter": "/",
             }
-        )
-        yield sesh
-
-
-def list_all_packages(architecture):
-    """
-    Fetch all known Redpanda packages.
-    """
-
-    def package_iter(sesh):
-        url = ("https://api.cloudsmith.io/v1/packages/redpanda/redpanda/?q=name:redpanda-{}+format:raw"
-               .format(architecture))
-        while url is not None:
-            resp = sesh.get(url)
-            resp.raise_for_status()
-            yield from resp.json()
-            link = resp.links.get("next", None)
-            url = link.get("url", None) if link else None
-
-    with cloudsmith_session() as sesh:
-        return [p for p in package_iter(sesh)]
+            if token:
+                params["continuation-token"] = token
+            with sesh.get(releases_url, params=params, timeout=60) as resp:
+                resp.raise_for_status()
+                root = ET.fromstring(resp.content)
+                for cp in root.findall("s3:CommonPrefixes", _s3_ns):
+                    prefix = cp.findtext("s3:Prefix", namespaces=_s3_ns)
+                    versions.append(prefix[len(releases_prefix):].rstrip("/"))
+                if root.findtext("s3:IsTruncated", namespaces=_s3_ns) != "true":
+                    break
+                token = root.findtext("s3:NextContinuationToken", namespaces=_s3_ns)
+    return versions
 
 
 def sync_packages():
     """
-    List all Redpanda packages eligible to sync.
+    List all Redpanda releases eligible to sync, across supported archs.
     """
+    for version in list_all_versions():
+        m = re.match(r"^(?P<major>\d{2})\.\d+\.\d{1,2}$", version)
+        if not m:
+            print(f"Skipping release with invalid version: {version}")
+            continue
+        if int(m.group("major")) < min_major_version:
+            print(
+                f"Skipping release {version} with major version < {min_major_version}"
+            )
+            continue
 
-    for arch in supported_architectures:
-        for pkg in list_all_packages(arch):
-            name = pkg["name"]
-            assert (
-                    name in architecture_names
-            ), f"Query returned package with unsupported name: {name}"
-            assert (
-                    pkg["format"] == "raw"
-            ), f"Query returned package with unsupported format: {pkg['format']}"
-
-            version = pkg["version"]
-            m = re.match(r"^(?P<major>\d{2})\.\d+\.\d{1,2}$", version)
-            if not m:
-                print(f"Skipping package {name} with invalid version: {version}")
-                continue
-            if int(m.group("major")) < min_major_version:
-                print(
-                    f"Skipping package {name} with major version {version} < {min_major_version}"
-                )
-                continue
-            if not pkg["is_downloadable"] or not pkg["is_sync_completed"]:
-                print(
-                    f"Skipping package {name} not ready: d={pkg['is_downloadable']} s={pkg['is_sync_completed']}"
-                )
-                continue
-
-            yield version, pkg["cdn_url"], arch
+        for arch, s3_arch in supported_architectures.items():
+            url = f"{releases_url}/{releases_prefix}{version}/redpanda-{version}-{s3_arch}.tar.gz"
+            yield version, url, arch
 
 
 def download_package(version, url, arch):
@@ -118,11 +105,29 @@ def download_package(version, url, arch):
         return
 
     print(f"Downloading {version} from {url}")
+    try:
+        resp = requests.get(url, stream=True, timeout=60)
+    except requests.RequestException as e:
+        print(f"Skipping {version} ({arch}): request failed: {e}")
+        return
+
     f = tempfile.NamedTemporaryFile(delete=False)
     try:
-        with cloudsmith_session() as sesh:
-            with sesh.get(url, stream=True) as s:
-                shutil.copyfileobj(s.raw, f)
+        with resp:
+            if resp.status_code == 404:
+                # Not every version has every arch published (e.g. older
+                # releases predating an architecture, or a partial upload
+                # in progress).
+                print(f"Skipping {version} ({arch}): not published at {url}")
+                os.unlink(f.name)
+                return
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError as e:
+                print(f"Skipping {version} ({arch}): {e}")
+                os.unlink(f.name)
+                return
+            shutil.copyfileobj(resp.raw, f)
     except:
         os.unlink(f.name)
         raise
@@ -143,7 +148,7 @@ def download_package(version, url, arch):
         redpanda = pathlib.Path(tdir) / "libexec" / "redpanda"
         assert (
             redpanda.is_file()
-        ), "Redpanda binary not found in extracted release {version} at location {redpanda.as_posix()}"
+        ), f"Redpanda binary not found in extracted release {version} at location {redpanda.as_posix()}"
         print(f"Moving extracted {version} from {tdir} to {path}")
         shutil.move(tdir, path)
     except:

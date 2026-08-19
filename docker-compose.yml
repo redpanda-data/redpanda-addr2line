@@ -15,7 +15,6 @@ services:
     volumes:
       - redpanda:/mnt/redpanda
     environment:
-      - CLOUDSMITH_API_KEY=${CLOUDSMITH_API_KEY}
       - MIN_MAJOR_VERSION=${MIN_MAJOR_VERSION}
 
   caddy:
