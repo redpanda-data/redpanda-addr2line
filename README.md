@@ -1,12 +1,11 @@
 ## Run locally
 
-If you have `docker-compose` installed then you can run the application locally
-using the provided script (add `--docker` if not using `podman`). The
-`CLOUDSMITH_API_KEY` is used to discover and access published releases, and can
-be found on our cloudsmith dashboard:
+If you have `docker compose` installed (the legacy `docker-compose` binary
+works too) then you can run the application locally using the provided
+script (add `--docker` if not using `podman`):
 
 ```
-CLOUDSMITH_API_KEY=YOUR_KEY ./run-local.sh
+./run-local.sh
 ```
 
 once the application is running it can be accessed using a browser:
