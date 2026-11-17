@@ -1,3 +1,4 @@
+import boto3
 import os
 import pathlib
 import re
@@ -9,11 +10,14 @@ import tempfile
 import threading
 import traceback
 import xml.etree.ElementTree as ET
+from botocore.config import Config
 
 #
-# Public S3 bucket hosting Redpanda release artifacts. Anonymously
-# readable, so no credentials are required.
+# S3 bucket hosting Redpanda release artifacts. Anyone can list it, but
+# releases/redpanda* refuses anonymous reads (DEVPROD-5362), so downloads use
+# presigned URLs made with the host's AWS credentials.
 #
+releases_bucket = os.getenv("REDPANDA_RELEASES_BUCKET", "vectorized-public")
 releases_url = os.getenv(
     "REDPANDA_RELEASES_URL", "https://vectorized-public.s3.us-west-2.amazonaws.com"
 ).rstrip("/")
@@ -45,6 +49,21 @@ min_major_version = int(os.getenv("MIN_MAJOR_VERSION", 22))
 supported_architectures = {"amd64": "amd64", "arm": "arm64"}
 
 _s3_ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+
+
+def presigned_url(key):
+    """A GET URL for the key, valid for one hour."""
+    # A new client on each call finds credentials again, so the sync loop
+    # recovers when the instance role becomes available after a failure.
+    # Without signature_version, boto3 presigns with SigV2 on the us-east-1 host.
+    s3 = boto3.client(
+        "s3",
+        region_name="us-west-2",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
+    return s3.generate_presigned_url(
+        "get_object", Params={"Bucket": releases_bucket, "Key": key}, ExpiresIn=3600
+    )
 
 
 def list_all_versions():
@@ -91,11 +110,11 @@ def sync_packages():
             continue
 
         for arch, s3_arch in supported_architectures.items():
-            url = f"{releases_url}/{releases_prefix}{version}/redpanda-{version}-{s3_arch}.tar.gz"
-            yield version, url, arch
+            key = f"{releases_prefix}{version}/redpanda-{version}-{s3_arch}.tar.gz"
+            yield version, key, arch
 
 
-def download_package(version, url, arch):
+def download_package(version, key, arch):
     """
     Downloads and extracts a Redpanda release into download directory.
     """
@@ -104,11 +123,13 @@ def download_package(version, url, arch):
         print(f"Skipping {version} at {path}: already downloaded")
         return
 
-    print(f"Downloading {version} from {url}")
+    # Log the key, not the URL: the URL carries the signature, and so does
+    # the text of requests exceptions.
+    print(f"Downloading {version} from {key}")
     try:
-        resp = requests.get(url, stream=True, timeout=60)
+        resp = requests.get(presigned_url(key), stream=True, timeout=60)
     except requests.RequestException as e:
-        print(f"Skipping {version} ({arch}): request failed: {e}")
+        print(f"Skipping {version} ({arch}): request failed: {type(e).__name__}")
         return
 
     f = tempfile.NamedTemporaryFile(delete=False)
@@ -118,13 +139,11 @@ def download_package(version, url, arch):
                 # Not every version has every arch published (e.g. older
                 # releases predating an architecture, or a partial upload
                 # in progress).
-                print(f"Skipping {version} ({arch}): not published at {url}")
+                print(f"Skipping {version} ({arch}): not published at {key}")
                 os.unlink(f.name)
                 return
-            try:
-                resp.raise_for_status()
-            except requests.HTTPError as e:
-                print(f"Skipping {version} ({arch}): {e}")
+            if not resp.ok:
+                print(f"Skipping {version} ({arch}): {resp.status_code} {resp.reason}")
                 os.unlink(f.name)
                 return
             shutil.copyfileobj(resp.raw, f)
@@ -165,8 +184,8 @@ if __name__ == "__main__":
 
     while not stop.is_set():
         try:
-            for version, url, arch in sync_packages():
-                download_package(version, url, arch)
+            for version, key, arch in sync_packages():
+                download_package(version, key, arch)
             print(f"Refresh complete. Next refresh in {refresh_seconds} sec")
             stop.wait(refresh_seconds)
 
